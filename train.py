@@ -145,9 +145,9 @@ def _prepare_dataset(root_dir, df):
     test_df.to_csv(root_dir / "test.csv", index=False)
 
     tokenizer = get_tokenizer(root_dir, df)
-    train_ds = _get_dataset(tokenizer, df, train_df, shuffle=True)
-    valid_ds = _get_dataset(tokenizer, df, valid_df, shuffle=False)
-    test_ds = _get_dataset(tokenizer, df, test_df, shuffle=False)
+    train_ds = _get_dataset(tokenizer, train_df, shuffle=True)
+    valid_ds = _get_dataset(tokenizer, valid_df, shuffle=False)
+    test_ds = _get_dataset(tokenizer, test_df, shuffle=False)
 
     return tokenizer, train_ds, valid_ds, test_ds
 
@@ -216,12 +216,12 @@ class Wav2Vec2MTL(Wav2Vec2ForCTC):
         )
 
 
-def _prepare_model(cfg):
+def _prepare_model(args_cfg):
     cfg, *_ = transformers.PretrainedConfig.get_config_dict("facebook/wav2vec2-xls-r-300m")
     cfg["gradient_checkpointing"] = True
     cfg["task_specific_params"] = {
-        'num_classes': cfg.num_classes,
-        'ctc_weight': cfg.ctc_weight,
+        'num_classes': args_cfg.num_classes,
+        'ctc_weight': args_cfg.ctc_weight,
     }
     return Wav2Vec2MTL.from_pretrained(
         "facebook/wav2vec2-xls-r-300m",
@@ -248,10 +248,14 @@ def _eval(model, ds, tokenizer):
     prob_all = softmax(cls_all, axis=1)
 
     return {
-        "accuracy": metrics.accuracy_score(y_true=cls_labels, y_pred=prob_all),
-        "precision": metrics.precision_score(y_true=cls_labels, y_pred=prob_all),
-        "recall": metrics.recall_score(y_true=cls_labels, y_pred=prob_all),
-        "f1": metrics.f1_score(y_true=cls_labels, y_pred=prob_all),
+        "accuracy": metrics.accuracy_score(
+            y_true=cls_labels, y_pred=prob_all.argmax(1)),
+        "precision": metrics.precision_score(
+            y_true=cls_labels, y_pred=prob_all.argmax(1), pos_label=0),
+        "recall": metrics.recall_score(
+            y_true=cls_labels, y_pred=prob_all.argmax(1), pos_label=0),
+        "f1": metrics.f1_score(
+            y_true=cls_labels, y_pred=prob_all.argmax(1), pos_label=0),
         # "per": cer_metric.compute(predictions=pred_str, references=label_str),
     }
 
@@ -273,7 +277,7 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, ckpt_path, logger):
 
             _losses = {"loss": loss.item(), "ctc_loss": ctc_loss.item(), "cls_loss": cls_loss.item()}
             train_loop.set_description(
-                " | ".join(["Epoch [{epoch}] "] + [f"{k} {v:.4f}" for k, v in _losses.items()])
+                " | ".join([f"Epoch [{epoch}] "] + [f"{k} {v:.4f}" for k, v in _losses.items()])
             )
             for k, v in _losses.items():
                 logger(f"train/{k}", v, steps)
@@ -291,8 +295,13 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, ckpt_path, logger):
 
         # Bestkeeping
         if eval_target is None or eval_target < eval_results[cfg.target_metric]:
+            print(
+                f"Updating the model with better {cfg.target_metric}.\n"
+                f"Prev: {eval_target:.4f}, Curr (epoch={epoch}): {eval_results[cfg.target_metric]:.4f}\n",
+                f"Removing the previous checkpoint.\n"
+            )
             eval_target = eval_results[cfg.target_metric]
-            model.save_model(ckpt_path)
+            model.save_pretrained(ckpt_path)
 
 
 def _get_logger(tb_path):
