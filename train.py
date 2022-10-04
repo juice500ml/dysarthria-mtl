@@ -3,6 +3,7 @@ import itertools
 import json
 from pathlib import Path
 from datetime import datetime
+import pickle
 
 from sklearn import metrics
 import numpy as np
@@ -294,10 +295,12 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, ckpt_path, logger):
             logger(f"eval/{k}", v, epoch)
 
         # Bestkeeping
-        if eval_target is None or eval_target < eval_results[cfg.target_metric]:
+        if eval_target is None or eval_target <= eval_results[cfg.target_metric]:
+            if eval_target is None:
+                eval_target = 0.0
             print(
                 f"Updating the model with better {cfg.target_metric}.\n"
-                f"Prev: {eval_target:.4f}, Curr (epoch={epoch}): {eval_results[cfg.target_metric]:.4f}\n",
+                f"Prev: {eval_target:.4f}, Curr (epoch={epoch}): {eval_results[cfg.target_metric]:.4f}\n"
                 f"Removing the previous checkpoint.\n"
             )
             eval_target = eval_results[cfg.target_metric]
@@ -317,7 +320,9 @@ if __name__ == "__main__":
 
     root_dir = Path(f'exp_results/{datetime.today().strftime("%Y-%m-%d_%H:%M:%S")}_{cfg.exp_name}')
     root_dir.mkdir(parents=True, exist_ok=False)
-    ckpt_path = root_dir / "best-model.ckpt"
+
+    pickle.dump(cfg, open(root_dir / "experiment_args.pkl", "wb"))
+    ckpt_path = root_dir / "best-model-ckpt"
     logger = _get_logger(root_dir)
 
     tokenizer, train_ds, valid_ds, test_ds = _prepare_dataset(root_dir, pd.read_csv(cfg.csv_path))
