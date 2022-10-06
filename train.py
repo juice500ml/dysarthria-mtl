@@ -254,7 +254,7 @@ def _eval(model, ds, tokenizer):
         *_, cls_logits, ctc_logits = model(**x)
 
         cls_all.append(cls_logits.detach().numpy())
-        pred_ids = np.argmax(ctc_logits.detach().numpy(), axis=-1)
+        pred_ids = np.argmax(ctc_logits.detach().numpy(), axis=-1)[0]
         ctc_all.append(_ctc_decode(pred_ids))
 
     cls_all = np.concatenate(cls_all)
