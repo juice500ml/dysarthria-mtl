@@ -16,6 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 import torchaudio
+from jiwer import wer
 from scipy.special import softmax
 from sklearn.model_selection import train_test_split
 from transformers import (
@@ -51,7 +52,7 @@ def _prepare_cfg(raw_args=None):
     )
 
     args = parser.parse_args(raw_args)  # Default to sys.argv
-    args.exp_name = f"cls={args.num_classes}_w={args.ctc_weight}_e={args.num_epochs}_bs={args.batch_size}"
+    args.exp_name = f"cls={args.num_classes}_e={args.num_epochs}_bs={args.batch_size}_ctcW={args.ctc_weight}"
  
     return args
 
@@ -72,17 +73,16 @@ class DysarthriaDataset(torch.utils.data.Dataset):
         audio_len = len(audio)
 
         cls_label = {
-            'dys': 0,
-            'healthy': 1,
+            0: 0, 1: 1, 2: 2, 3: 3, 4: 4,
         }[row.category]
 
-        ctc_label = self.tokenizer(row.text)['input_ids']
+        ctc_label = self.tokenizer.encode(row.text)
         
         return {
-            'audio': audio,
-            'audio_len': audio_len,
-            'cls_label': cls_label,
-            'ctc_label': ctc_label,
+            "audio": audio,
+            "audio_len": audio_len,
+            "cls_label": cls_label,
+            "ctc_label": ctc_label,
         }
 
     def __len__(self):
@@ -91,19 +91,19 @@ class DysarthriaDataset(torch.utils.data.Dataset):
 
 def _collator(batch):
     return {
-        'input_values': torch.nn.utils.rnn.pad_sequence(
-            [x['audio'] for x in batch],
+        "input_values": torch.nn.utils.rnn.pad_sequence(
+            [x["audio"] for x in batch],
             batch_first=True,
             padding_value=0.0,
         ),
-        'input_lengths': torch.LongTensor(
-            [x['audio_len'] for x in batch]
+        "input_lengths": torch.LongTensor(
+            [x["audio_len"] for x in batch]
         ),
-        'cls_labels': torch.LongTensor(
-            [x['cls_label'] for x in batch]
+        "cls_labels": torch.LongTensor(
+            [x["cls_label"] for x in batch]
         ),
-        'ctc_labels': torch.nn.utils.rnn.pad_sequence(
-            [torch.IntTensor(x['ctc_label']) for x in batch],
+        "ctc_labels": torch.nn.utils.rnn.pad_sequence(
+            [torch.IntTensor(x["ctc_label"]) for x in batch],
             batch_first=True,
             padding_value=-100,
         ),
@@ -116,16 +116,15 @@ def get_tokenizer(root_dir, df):
     vocab_dict = {v: i for i, v in enumerate(vocabs)}
     vocab_dict["[UNK]"] = len(vocab_dict)
     vocab_dict["[PAD]"] = len(vocab_dict)
-    vocab_dict[" "] = len(vocab_dict)
 
-    with open(root_dir / 'vocab.json', 'w') as f:
+    with open(root_dir / "vocab.json", "w") as f:
         json.dump(vocab_dict, f)
 
     return Wav2Vec2CTCTokenizer(
-        root_dir / 'vocab.json',
-        unk_token='[UNK]',
-        pad_token='[PAD]',
-        word_delimiter_token=' ',
+        root_dir / "vocab.json",
+        unk_token="[UNK]",
+        pad_token="[PAD]",
+        word_delimiter_token=" ",
     )
 
 
@@ -160,7 +159,8 @@ class Wav2Vec2MTL(Wav2Vec2ForCTC):
 
         self.wav2vec2 = Wav2Vec2Model(config)
         self.dropout = nn.Dropout(config.final_dropout)
-        self.cls_head = nn.Linear(config.hidden_size, self.cfg['num_classes'])
+        self.cls_head = nn.Linear(config.hidden_size, self.cfg["num_classes"])
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size)
         self._vocab_size = config.vocab_size
 
     def forward(
@@ -205,7 +205,7 @@ class Wav2Vec2MTL(Wav2Vec2ForCTC):
             )
 
         # Final loss
-        loss = cls_loss + self.cfg['ctc_weight'] * ctc_loss
+        loss = cls_loss + self.cfg["ctc_weight"] * ctc_loss
         return (
             loss,
             cls_loss,
@@ -216,14 +216,14 @@ class Wav2Vec2MTL(Wav2Vec2ForCTC):
             ctc_logits,
         )
 
-
-def _prepare_model(args_cfg):
+def _prepare_model(args_cfg, tokenizer):
     cfg, *_ = transformers.PretrainedConfig.get_config_dict("facebook/wav2vec2-xls-r-300m")
     cfg["gradient_checkpointing"] = True
     cfg["task_specific_params"] = {
-        'num_classes': args_cfg.num_classes,
-        'ctc_weight': args_cfg.ctc_weight,
+        "num_classes": args_cfg.num_classes,
+        "ctc_weight": args_cfg.ctc_weight,
     }
+    cfg["vocab_size"] = len(tokenizer)
     return Wav2Vec2MTL.from_pretrained(
         "facebook/wav2vec2-xls-r-300m",
         config=transformers.Wav2Vec2Config.from_dict(cfg),
@@ -231,19 +231,31 @@ def _prepare_model(args_cfg):
 
 
 def _eval(model, ds, tokenizer):
+    def _ctc_decode(token_ids):
+        # Output string with space in-between.
+        return tokenizer.decode(
+            token_ids=token_ids,
+            skip_special_tokens=True,
+            spaces_between_special_tokens=True,
+        )
+
     loop = tqdm.tqdm(enumerate(ds))
 
     cls_all, ctc_all = [], []
     cls_labels, ctc_labels = [], []
 
     for step, x in loop:
-        cls_labels.append(x["cls_labels"].item())
-        ctc_labels.append(x["ctc_labels"].numpy()[0])
-        x = {k: v.to(model.device) for k, v in x.items()}
+        assert len(x["cls_labels"]) == 1
 
+        cls_labels.append(x["cls_labels"].item())
+        ctc_labels.append(_ctc_decode(x["ctc_labels"].numpy()[0]))
+
+        x = {k: v.to(model.device) for k, v in x.items()}
         *_, cls_logits, ctc_logits = model(**x)
+
         cls_all.append(cls_logits.detach().numpy())
-        ctc_all.append(ctc_logits.detach().numpy())
+        pred_ids = np.argmax(ctc_logits.detach().numpy(), axis=-1)
+        ctc_all.append(_ctc_decode(pred_ids))
 
     cls_all = np.concatenate(cls_all)
     prob_all = softmax(cls_all, axis=1)
@@ -252,12 +264,12 @@ def _eval(model, ds, tokenizer):
         "accuracy": metrics.accuracy_score(
             y_true=cls_labels, y_pred=prob_all.argmax(1)),
         "precision": metrics.precision_score(
-            y_true=cls_labels, y_pred=prob_all.argmax(1), pos_label=0),
+            y_true=cls_labels, y_pred=prob_all.argmax(1), average="macro"),
         "recall": metrics.recall_score(
-            y_true=cls_labels, y_pred=prob_all.argmax(1), pos_label=0),
+            y_true=cls_labels, y_pred=prob_all.argmax(1), average="macro"),
         "f1": metrics.f1_score(
-            y_true=cls_labels, y_pred=prob_all.argmax(1), pos_label=0),
-        # "per": cer_metric.compute(predictions=pred_str, references=label_str),
+            y_true=cls_labels, y_pred=prob_all.argmax(1), average="macro"),
+        "per": wer(truth=ctc_labels, hypothesis=ctc_all),
     }
 
 
@@ -326,11 +338,16 @@ if __name__ == "__main__":
     logger = _get_logger(root_dir)
 
     tokenizer, train_ds, valid_ds, test_ds = _prepare_dataset(root_dir, pd.read_csv(cfg.csv_path))
-    model = _prepare_model(cfg)
+
+    model = _prepare_model(cfg, tokenizer)
     optimizer = torch.optim.Adam(model.parameters(), lr=2e-5, betas=(0.9,0.98), eps=1e-08)
 
+    # Train & Validation loop
     _train(cfg, model, train_ds, valid_ds, tokenizer, ckpt_path=ckpt_path, logger=logger)
-    test_results = _eval(Wav2Vec2MTL.from_pretrained(ckpt_path).to(torch.device("cpu")), test_ds, tokenizer)
+
+    # Test on the best model
+    best_model = Wav2Vec2MTL.from_pretrained(ckpt_path).to(torch.device("cpu"))
+    test_results = _eval(best_model, test_ds, tokenizer,processor)
     print(test_results)
     for k, v in test_results.items():
         logger(f"test/{k}", v, 0)
