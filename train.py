@@ -50,11 +50,16 @@ def _prepare_cfg(raw_args=None):
         "--target_metric", type=str, default="accuracy"
     )
     parser.add_argument(
-        "--root_dir", type=str, default=None, help="N/A"
+        "--root_dir", type=str, default=None,
+        help="If provided, continue training. If not, start training from scratch."
+    )
+    parser.add_argument(
+        "--prefix", type=str, default='',
+        help="Custom string to add to the experiment name."
     )
 
     args = parser.parse_args(raw_args)  # Default to sys.argv
-    args.exp_name = f"cls={args.num_classes}_e={args.num_epochs}_bs={args.batch_size}_ctcW={args.ctc_weight}"
+    args.exp_name = f"{args.prefix}_cls={args.num_classes}_e={args.num_epochs}_bs={args.batch_size}_ctcW={args.ctc_weight}"
 
     if args.root_dir is None:
         # Train from scratch
