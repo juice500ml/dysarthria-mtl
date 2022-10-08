@@ -304,11 +304,11 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path,
     start_epoch = 0
 
     if cfg.train_from_ckpt:
-        scheduler = torch.load(last_ckpt_path / 'scheduler.pt')
+        scheduler = torch.load(last_ckpt_path / "scheduler.pt")
         model.load_state_dict(Wav2Vec2MTL.from_pretrained(last_ckpt_path).to(torch.device("cpu")).state_dict())
-        optimizer.load_state_dict(torch.load(last_ckpt_path / 'optimizer.pt'))
+        optimizer.load_state_dict(torch.load(last_ckpt_path / "optimizer.pt"))
 
-        start_epoch = scheduler['last_epoch']
+        start_epoch = scheduler["last_epoch"]
         steps = start_epoch * len(train_ds)
 
     for epoch in range(start_epoch, cfg.num_epochs):
@@ -353,8 +353,8 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path,
 
     # Save last model
     model.save_pretrained(last_ckpt_path)
-    torch.save(optimizer.state_dict(), last_ckpt_path / 'optimizer.pt')
-    torch.save({'last_epoch': cfg.num_epochs}, last_ckpt_path / 'scheduler.pt')
+    torch.save(optimizer.state_dict(), last_ckpt_path / "optimizer.pt")
+    torch.save({"last_epoch": cfg.num_epochs}, last_ckpt_path / "scheduler.pt")
 
 
 def _get_logger(tb_path):
