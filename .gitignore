@@ -1,4 +1,4 @@
 dataset/*
 exp_results/*
 *.csv
-./envs
+envs/*
