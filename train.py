@@ -63,9 +63,10 @@ def _prepare_cfg(raw_args=None):
 
     if args.root_dir is None:
         # Train from scratch
-        args.root_dir = Path(f'exp_results/{datetime.today().strftime("%Y-%m-%d_%H:%M:%S")}_{cfg.exp_name}')
+        args.root_dir = Path(f'exp_results/{datetime.today().strftime("%Y-%m-%d_%H:%M:%S")}_{args.exp_name}')
         args.root_dir.mkdir(parents=True, exist_ok=False)
         args.train_from_ckpt = False
+
     else:
         # Train from checkpoint
         args.root_dir = Path(args.root_dir)
@@ -307,6 +308,7 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path,
     eval_target = None
     steps = 0
     start_epoch = 0
+    add_epoch = 0
 
     if cfg.train_from_ckpt:
         scheduler = torch.load(last_ckpt_path / "scheduler.pt")
@@ -315,8 +317,9 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path,
 
         start_epoch = scheduler["last_epoch"]
         steps = start_epoch * len(train_ds)
+        add_epoch = cfg.num_epochs
 
-    for epoch in range(start_epoch, cfg.num_epochs):
+    for epoch in range(start_epoch, cfg.num_epochs+add_epoch):
         train_loop = tqdm.tqdm(enumerate(train_ds))
 
         # Train
@@ -373,13 +376,15 @@ if __name__ == "__main__":
     cfg = _prepare_cfg()
     print(cfg)
 
-    if not args.train_from_ckpt:
+    root_dir = cfg.root_dir
+
+    if not cfg.train_from_ckpt:
         pickle.dump(cfg, open(cfg.root_dir / "experiment_args.pkl", "wb"))
     best_ckpt_path = root_dir / "best-model-ckpt"
     last_ckpt_path = root_dir / "last-model-ckpt"
     logger = _get_logger(root_dir)
 
-    tokenizer, train_ds, valid_ds, test_ds = _prepare_dataset(root_dir, pd.read_csv(cfg.csv_path), args.train_from_ckpt)
+    tokenizer, train_ds, valid_ds, test_ds = _prepare_dataset(root_dir, pd.read_csv(cfg.csv_path), cfg.train_from_ckpt)
 
     model = _prepare_model(cfg, tokenizer)
     optimizer = torch.optim.Adam(model.parameters(), lr=2e-5, betas=(0.9,0.98), eps=1e-08)
