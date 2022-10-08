@@ -10,7 +10,6 @@ import numpy as np
 import tqdm
 import pandas as pd
 import transformers
-from datasets import load_metric
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -50,10 +49,24 @@ def _prepare_cfg(raw_args=None):
     parser.add_argument(
         "--target_metric", type=str, default="accuracy"
     )
+    parser.add_argument(
+        "--root_dir", type=str, default=None, help="N/A"
+    )
 
     args = parser.parse_args(raw_args)  # Default to sys.argv
     args.exp_name = f"cls={args.num_classes}_e={args.num_epochs}_bs={args.batch_size}_ctcW={args.ctc_weight}"
- 
+
+    if args.root_dir is None:
+        # Train from scratch
+        args.root_dir = Path(f'exp_results/{datetime.today().strftime("%Y-%m-%d_%H:%M:%S")}_{cfg.exp_name}')
+        args.root_dir.mkdir(parents=True, exist_ok=False)
+        args.train_from_ckpt = False
+    else:
+        # Train from checkpoint
+        args.root_dir = Path(args.root_dir)
+        assert args.root_dir.exists()
+        args.train_from_ckpt = True
+
     return args
 
 
@@ -135,14 +148,25 @@ def _get_dataset(tokenizer, target_df, **kwargs):
     )
 
 
-def _prepare_dataset(root_dir, df):
-    # Random split
-    train_df, test_df = train_test_split(df, test_size=0.2, random_state=101, stratify=df["category"])
-    train_df, valid_df = train_test_split(train_df, test_size=0.25, random_state=101, stratify=train_df["category"])
+def _prepare_dataset(root_dir, df, train_from_ckpt):
+    if train_from_ckpt:
+        train_df = pd.read_csv(root_dir / "train.csv")
+        valid_df = pd.read_csv(root_dir / "valid.csv")
+        test_df = pd.read_csv(root_dir / "test.csv")
+    else:
+        if "split" in df:
+            # Predefined split
+            train_df = df[df.split == "train"]
+            valid_df = df[df.split == "valid"]
+            test_df = df[df.split == "test"]
+        else:
+            # Random split
+            train_df, test_df = train_test_split(df, test_size=0.2, random_state=101, stratify=df["category"])
+            train_df, valid_df = train_test_split(train_df, test_size=0.25, random_state=101, stratify=train_df["category"])
 
-    train_df.to_csv(root_dir / "train.csv", index=False)
-    valid_df.to_csv(root_dir / "valid.csv", index=False)
-    test_df.to_csv(root_dir / "test.csv", index=False)
+        train_df.to_csv(root_dir / "train.csv", index=False)
+        valid_df.to_csv(root_dir / "valid.csv", index=False)
+        test_df.to_csv(root_dir / "test.csv", index=False)
 
     tokenizer = get_tokenizer(root_dir, df)
     train_ds = _get_dataset(tokenizer, train_df, shuffle=True)
@@ -273,12 +297,21 @@ def _eval(model, ds, tokenizer):
     }
 
 
-def _train(cfg, model, train_ds, valid_ds, tokenizer, ckpt_path, logger):
+def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path, last_ckpt_path, logger):
     grad_acc = cfg.batch_size
     eval_target = None
     steps = 0
+    start_epoch = 0
 
-    for epoch in range(cfg.num_epochs):
+    if cfg.train_from_ckpt:
+        scheduler = torch.load(last_ckpt_path / 'scheduler.pt')
+        model.load_state_dict(Wav2Vec2MTL.from_pretrained(last_ckpt_path).to(torch.device("cpu")).state_dict())
+        optimizer.load_state_dict(torch.load(last_ckpt_path / 'optimizer.pt'))
+
+        start_epoch = scheduler['last_epoch']
+        steps = start_epoch * len(train_ds)
+
+    for epoch in range(start_epoch, cfg.num_epochs):
         train_loop = tqdm.tqdm(enumerate(train_ds))
 
         # Train
@@ -316,7 +349,12 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, ckpt_path, logger):
                 f"Removing the previous checkpoint.\n"
             )
             eval_target = eval_results[cfg.target_metric]
-            model.save_pretrained(ckpt_path)
+            model.save_pretrained(best_ckpt_path)
+
+    # Save last model
+    model.save_pretrained(last_ckpt_path)
+    torch.save(optimizer.state_dict(), last_ckpt_path / 'optimizer.pt')
+    torch.save({'last_epoch': cfg.num_epochs}, last_ckpt_path / 'scheduler.pt')
 
 
 def _get_logger(tb_path):
@@ -330,24 +368,23 @@ if __name__ == "__main__":
     cfg = _prepare_cfg()
     print(cfg)
 
-    root_dir = Path(f'exp_results/{datetime.today().strftime("%Y-%m-%d_%H:%M:%S")}_{cfg.exp_name}')
-    root_dir.mkdir(parents=True, exist_ok=False)
-
-    pickle.dump(cfg, open(root_dir / "experiment_args.pkl", "wb"))
-    ckpt_path = root_dir / "best-model-ckpt"
+    if not args.train_from_ckpt:
+        pickle.dump(cfg, open(cfg.root_dir / "experiment_args.pkl", "wb"))
+    best_ckpt_path = root_dir / "best-model-ckpt"
+    last_ckpt_path = root_dir / "last-model-ckpt"
     logger = _get_logger(root_dir)
 
-    tokenizer, train_ds, valid_ds, test_ds = _prepare_dataset(root_dir, pd.read_csv(cfg.csv_path))
+    tokenizer, train_ds, valid_ds, test_ds = _prepare_dataset(root_dir, pd.read_csv(cfg.csv_path), args.train_from_ckpt)
 
     model = _prepare_model(cfg, tokenizer)
     optimizer = torch.optim.Adam(model.parameters(), lr=2e-5, betas=(0.9,0.98), eps=1e-08)
 
     # Train & Validation loop
-    _train(cfg, model, train_ds, valid_ds, tokenizer, ckpt_path=ckpt_path, logger=logger)
+    _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path=best_ckpt_path, last_ckpt_path=last_ckpt_path, logger=logger)
 
     # Test on the best model
-    best_model = Wav2Vec2MTL.from_pretrained(ckpt_path).to(torch.device("cpu"))
-    test_results = _eval(best_model, test_ds, tokenizer,processor)
+    best_model = Wav2Vec2MTL.from_pretrained(best_ckpt_path).to(torch.device("cpu"))
+    test_results = _eval(best_model, test_ds, tokenizer)
     print(test_results)
     for k, v in test_results.items():
         logger(f"test/{k}", v, 0)
