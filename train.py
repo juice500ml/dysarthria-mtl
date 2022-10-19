@@ -47,7 +47,10 @@ def _prepare_cfg(raw_args=None):
         "--csv_path", type=Path, default=Path("dataset.csv"),
     )
     parser.add_argument(
-        "--target_metric", type=str, default="accuracy"
+        "--target_metric", type=str, default="average_loss"
+    )
+    parser.add_argument(
+        "--target_metric_bigger_the_better", type=bool, default=False,
     )
     parser.add_argument(
         "--root_dir", type=str, default=None,
@@ -56,6 +59,10 @@ def _prepare_cfg(raw_args=None):
     parser.add_argument(
         "--prefix", type=str, default='',
         help="Custom string to add to the experiment name."
+    )
+    parser.add_argument(
+        "--save_all_epochs", type=bool, default=False,
+        help="Save all the epoch-wise models during training.",
     )
 
     args = parser.parse_args(raw_args)  # Default to sys.argv
@@ -273,6 +280,7 @@ def _eval(model, ds, tokenizer):
 
     cls_all, ctc_all = [], []
     cls_labels, ctc_labels = [], []
+    losses, cls_losses, ctc_losses = [], [], []
 
     for step, x in loop:
         assert len(x["cls_labels"]) == 1
@@ -281,16 +289,23 @@ def _eval(model, ds, tokenizer):
         ctc_labels.append(_ctc_decode(x["ctc_labels"].numpy()[0]))
 
         x = {k: v.to(model.device) for k, v in x.items()}
-        *_, cls_logits, ctc_logits = model(**x)
+        loss, cls_loss, ctc_loss, *_, cls_logits, ctc_logits = model(**x)
 
         cls_all.append(cls_logits.detach().numpy())
         pred_ids = np.argmax(ctc_logits.detach().numpy(), axis=-1)[0]
         ctc_all.append(_ctc_decode(pred_ids))
 
+        losses.append(loss.item())
+        cls_losses.append(cls_loss.item())
+        ctc_losses.append(ctc_loss.item())
+
     cls_all = np.concatenate(cls_all)
     prob_all = softmax(cls_all, axis=1)
 
     return {
+        "average_loss": np.array(losses).mean(),
+        "average_cls_loss": np.array(cls_losses).mean(),
+        "average_ctc_loss": np.array(ctc_losses).mean(),
         "accuracy": metrics.accuracy_score(
             y_true=cls_labels, y_pred=prob_all.argmax(1)),
         "precision": metrics.precision_score(
@@ -303,7 +318,7 @@ def _eval(model, ds, tokenizer):
     }
 
 
-def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path, last_ckpt_path, logger):
+def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path, last_ckpt_path, all_ckpt_path, logger):
     grad_acc = cfg.batch_size
     eval_target = None
     steps = 0
@@ -346,7 +361,12 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path,
             logger(f"eval/{k}", v, epoch)
 
         # Bestkeeping
-        if eval_target is None or eval_target <= eval_results[cfg.target_metric]:
+        if (
+            (eval_target is None)
+            or (cfg.target_metric_bigger_the_better and eval_target <= eval_results[cfg.target_metric])
+            or (not cfg.target_metric_bigger_the_better and eval_target >= eval_results[cfg.target_metric])
+        ):
+            # For pretty printing
             if eval_target is None:
                 eval_target = 0.0
             print(
@@ -356,6 +376,10 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path,
             )
             eval_target = eval_results[cfg.target_metric]
             model.save_pretrained(best_ckpt_path)
+
+        # Saving everything
+        if cfg.save_all_epochs:
+            model.save_pretrained(all_ckpt_path / f"e-{epoch:04d}")
 
     # Save last model
     model.save_pretrained(last_ckpt_path)
@@ -377,6 +401,7 @@ if __name__ == "__main__":
     pickle.dump(cfg, open(cfg.root_dir / "experiment_args.pkl", "wb"))
     best_ckpt_path = cfg.root_dir / "best-model-ckpt"
     last_ckpt_path = cfg.root_dir / "last-model-ckpt"
+    all_ckpt_path = cfg.root_dir / "model-ckpts"
     logger = _get_logger(cfg.root_dir)
 
     tokenizer, train_ds, valid_ds, test_ds = _prepare_dataset(cfg.root_dir, pd.read_csv(cfg.csv_path), cfg.train_from_ckpt)
@@ -385,7 +410,9 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(), lr=2e-5, betas=(0.9,0.98), eps=1e-08)
 
     # Train & Validation loop
-    _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path=best_ckpt_path, last_ckpt_path=last_ckpt_path, logger=logger)
+    _train(
+        cfg, model, train_ds, valid_ds, tokenizer, optimizer,
+        best_ckpt_path=best_ckpt_path, last_ckpt_path=last_ckpt_path, all_ckpt_path=all_ckpt_path, logger=logger)
 
     # Test on the best model
     best_model = Wav2Vec2MTL.from_pretrained(best_ckpt_path).to(torch.device("cpu"))
