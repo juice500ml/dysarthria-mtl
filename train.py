@@ -64,6 +64,10 @@ def _prepare_cfg(raw_args=None):
         "--save_all_epochs", type=bool, default=False,
         help="Save all the epoch-wise models during training.",
     )
+    parser.add_argument(
+        "--freeze_feature_extractor", type=bool, default=True,
+        help="Freeze convolution models in wav2vec2.",
+    )
 
     args = parser.parse_args(raw_args)  # Default to sys.argv
     args.exp_name = f"{args.prefix}_cls={args.num_classes}_e={args.num_epochs}_bs={args.batch_size}_ctcW={args.ctc_weight}"
@@ -261,10 +265,16 @@ def _prepare_model(args_cfg, tokenizer):
         "ctc_weight": args_cfg.ctc_weight,
     }
     cfg["vocab_size"] = len(tokenizer)
-    return Wav2Vec2MTL.from_pretrained(
+
+    model = Wav2Vec2MTL.from_pretrained(
         "facebook/wav2vec2-xls-r-300m",
         config=transformers.Wav2Vec2Config.from_dict(cfg),
     ).to(torch.device("cpu"))
+
+    if args_cfg.freeze_feature_extractor:
+        model.freeze_feature_encoder()
+
+    return model
 
 
 def _eval(model, ds, tokenizer):
