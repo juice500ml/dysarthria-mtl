@@ -141,8 +141,8 @@ def _collator(batch):
 
 
 def get_tokenizer(root_dir, df):
-    vocabs = set(itertools.chain.from_iterable(
-        df.text.apply(lambda x: x.split())))
+    vocabs = sorted(list(set(itertools.chain.from_iterable(
+        df.text.apply(lambda x: x.split())))))
     vocab_dict = {v: i for i, v in enumerate(vocabs)}
     vocab_dict["[UNK]"] = len(vocab_dict)
     vocab_dict["[PAD]"] = len(vocab_dict)
