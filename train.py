@@ -266,6 +266,7 @@ def _prepare_model(args_cfg, tokenizer):
     cfg["task_specific_params"] = {
         "num_classes": args_cfg.num_classes,
         "ctc_weight": args_cfg.ctc_weight,
+        "cls_weight": args_cfg.cls_weight,
     }
     cfg["vocab_size"] = len(tokenizer)
 
