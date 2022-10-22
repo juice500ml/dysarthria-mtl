@@ -343,9 +343,10 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path,
         steps = start_epoch * len(train_ds)
 
     for epoch in range(start_epoch, cfg.num_epochs):
+        # Train
+        model.train()
         train_loop = tqdm.tqdm(enumerate(train_ds))
 
-        # Train
         for step, x in train_loop:
             x = {k: v.to(model.device) for k, v in x.items()}
 
@@ -366,6 +367,7 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path,
                 optimizer.zero_grad()
 
         # Evaluation
+        model.eval()
         eval_results = _eval(model, valid_ds, tokenizer)
         for k, v in eval_results.items():
             logger(f"eval/{k}", v, epoch)
