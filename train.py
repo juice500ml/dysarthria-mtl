@@ -44,6 +44,9 @@ def _prepare_cfg(raw_args=None):
         "--ctc_weight", type=float, default=0.5, help="N/A"
     )
     parser.add_argument(
+        "--cls_weight", type=float, default=1.0, help="N/A"
+    )
+    parser.add_argument(
         "--csv_path", type=Path, default=Path("dataset.csv"),
     )
     parser.add_argument(
@@ -246,7 +249,7 @@ class Wav2Vec2MTL(Wav2Vec2ForCTC):
             )
 
         # Final loss
-        loss = cls_loss + self.cfg["ctc_weight"] * ctc_loss
+        loss = self.cfg["cls_weight"] * cls_loss + self.cfg["ctc_weight"] * ctc_loss
         return (
             loss,
             cls_loss,
