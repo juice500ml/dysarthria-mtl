@@ -264,9 +264,12 @@ class Wav2Vec2MTL(Wav2Vec2ForCTC):
             ctc_logits,
         )
 
-def _prepare_model(args_cfg, tokenizer):
+def _prepare_model_optimizer(args_cfg, tokenizer):
     if args_cfg.pretrained_weights is not None:
         model = Wav2Vec2MTL.from_pretrained(args_cfg.pretrained_weights)
+        optimizer = torch.optim.Adam(
+            model.parameters(), lr=2e-5, betas=(0.9, 0.98), eps=1e-08)
+        optimizer.load_state_dict(torch.load(args_cfg.pretrained_weights / "optimizer.pt"))
     else:
         cfg, *_ = transformers.PretrainedConfig.get_config_dict("facebook/wav2vec2-xls-r-300m")
         cfg["gradient_checkpointing"] = True
@@ -281,11 +284,13 @@ def _prepare_model(args_cfg, tokenizer):
             "facebook/wav2vec2-xls-r-300m",
             config=transformers.Wav2Vec2Config.from_dict(cfg),
         ).to(torch.device("cpu"))
+        optimizer = torch.optim.Adam(
+            model.parameters(), lr=2e-5, betas=(0.9, 0.98), eps=1e-08)
 
     if args_cfg.freeze_feature_extractor:
         model.freeze_feature_encoder()
 
-    return model
+    return model, optimizer
 
 
 def _eval(model, ds, tokenizer):
@@ -406,7 +411,7 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path,
 
     # Save last model
     model.save_pretrained(last_ckpt_path)
-    torch.save(optimizer.state_dict(), last_ckpt_path / "optimizer.pt")
+    torch.save(optimizer.state_dict(), torch.load(last_ckpt_path / "optimizer.pt"))
     torch.save({"last_epoch": cfg.num_epochs}, last_ckpt_path / "scheduler.pt")
 
 
@@ -429,8 +434,7 @@ if __name__ == "__main__":
 
     tokenizer, train_ds, valid_ds, test_ds = _prepare_dataset(cfg.root_dir, pd.read_csv(cfg.csv_path), cfg.train_from_ckpt)
 
-    model = _prepare_model(cfg, tokenizer)
-    optimizer = torch.optim.Adam(model.parameters(), lr=2e-5, betas=(0.9,0.98), eps=1e-08)
+    model, optimizer = _prepare_model_optimizer(cfg, tokenizer)
 
     # Train & Validation loop
     _train(
