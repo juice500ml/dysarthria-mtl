@@ -71,6 +71,10 @@ def _prepare_cfg(raw_args=None):
         "--freeze_feature_extractor", type=bool, default=True,
         help="Freeze convolution models in wav2vec2.",
     )
+    parser.add_argument(
+        "--pretrained_weights", type=Path, default=None,
+        help="If provided, continue training from the model."
+    )
 
     args = parser.parse_args(raw_args)  # Default to sys.argv
     args.exp_name = f"{args.prefix}_cls={args.num_classes}_e={args.num_epochs}_bs={args.batch_size}_ctcW={args.ctc_weight}"
@@ -261,19 +265,22 @@ class Wav2Vec2MTL(Wav2Vec2ForCTC):
         )
 
 def _prepare_model(args_cfg, tokenizer):
-    cfg, *_ = transformers.PretrainedConfig.get_config_dict("facebook/wav2vec2-xls-r-300m")
-    cfg["gradient_checkpointing"] = True
-    cfg["task_specific_params"] = {
-        "num_classes": args_cfg.num_classes,
-        "ctc_weight": args_cfg.ctc_weight,
-        "cls_weight": args_cfg.cls_weight,
-    }
-    cfg["vocab_size"] = len(tokenizer)
+    if args_cfg.pretrained_weights is not None:
+        model = Wav2Vec2MTL.from_pretrained(args_cfg.pretrained_weights)
+    else:
+        cfg, *_ = transformers.PretrainedConfig.get_config_dict("facebook/wav2vec2-xls-r-300m")
+        cfg["gradient_checkpointing"] = True
+        cfg["task_specific_params"] = {
+            "num_classes": args_cfg.num_classes,
+            "ctc_weight": args_cfg.ctc_weight,
+            "cls_weight": args_cfg.cls_weight,
+        }
+        cfg["vocab_size"] = len(tokenizer)
 
-    model = Wav2Vec2MTL.from_pretrained(
-        "facebook/wav2vec2-xls-r-300m",
-        config=transformers.Wav2Vec2Config.from_dict(cfg),
-    ).to(torch.device("cpu"))
+        model = Wav2Vec2MTL.from_pretrained(
+            "facebook/wav2vec2-xls-r-300m",
+            config=transformers.Wav2Vec2Config.from_dict(cfg),
+        ).to(torch.device("cpu"))
 
     if args_cfg.freeze_feature_extractor:
         model.freeze_feature_encoder()
