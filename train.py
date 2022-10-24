@@ -35,6 +35,9 @@ def _prepare_cfg(raw_args=None):
         "--batch_size", type=int, default=4, help="N/A"
     )
     parser.add_argument(
+        "--learning_rate", type=float, default=2e-5, help="N/A"
+    )
+    parser.add_argument(
         "--num_epochs", type=int, default=10, help="N/A"
     )
     parser.add_argument(
@@ -74,6 +77,9 @@ def _prepare_cfg(raw_args=None):
     parser.add_argument(
         "--pretrained_weights", type=Path, default=None,
         help="If provided, continue training from the model."
+    )
+    parser.add_argument(
+        "--enable_cls_epochs", type=int, default=0,
     )
 
     args = parser.parse_args(raw_args)  # Default to sys.argv
@@ -210,6 +216,7 @@ class Wav2Vec2MTL(Wav2Vec2ForCTC):
         self.cls_head = nn.Linear(config.hidden_size, self.cfg["num_classes"])
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size)
         self._vocab_size = config.vocab_size
+        self.enable_cls = True
 
     def forward(
         self,
@@ -253,7 +260,11 @@ class Wav2Vec2MTL(Wav2Vec2ForCTC):
             )
 
         # Final loss
-        loss = self.cfg["cls_weight"] * cls_loss + self.cfg["ctc_weight"] * ctc_loss
+        if self.enable_cls:
+            loss = self.cfg["cls_weight"] * cls_loss + self.cfg["ctc_weight"] * ctc_loss
+        else:
+            loss = self.cfg["ctc_weight"] * ctc_loss
+
         return (
             loss,
             cls_loss,
@@ -268,8 +279,7 @@ def _prepare_model_optimizer(args_cfg, tokenizer):
     if args_cfg.pretrained_weights is not None:
         model = Wav2Vec2MTL.from_pretrained(args_cfg.pretrained_weights)
         optimizer = torch.optim.Adam(
-            model.parameters(), lr=2e-5, betas=(0.9, 0.98), eps=1e-08)
-        optimizer.load_state_dict(torch.load(args_cfg.pretrained_weights / "optimizer.pt"))
+            model.parameters(), lr=args_cfg.learning_rate, betas=(0.9, 0.98), eps=1e-08)
     else:
         cfg, *_ = transformers.PretrainedConfig.get_config_dict("facebook/wav2vec2-xls-r-300m")
         cfg["gradient_checkpointing"] = True
@@ -285,7 +295,7 @@ def _prepare_model_optimizer(args_cfg, tokenizer):
             config=transformers.Wav2Vec2Config.from_dict(cfg),
         ).to(torch.device("cpu"))
         optimizer = torch.optim.Adam(
-            model.parameters(), lr=2e-5, betas=(0.9, 0.98), eps=1e-08)
+            model.parameters(), lr=args_cfg.learning_rate, betas=(0.9, 0.98), eps=1e-08)
 
     if args_cfg.freeze_feature_extractor:
         model.freeze_feature_encoder()
@@ -360,6 +370,7 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path,
 
     for epoch in range(start_epoch, cfg.num_epochs):
         # Train
+        model.enable_cls = epoch >= cfg.enable_cls_epochs
         model.train()
         train_loop = tqdm.tqdm(enumerate(train_ds))
 
@@ -411,7 +422,7 @@ def _train(cfg, model, train_ds, valid_ds, tokenizer, optimizer, best_ckpt_path,
 
     # Save last model
     model.save_pretrained(last_ckpt_path)
-    torch.save(optimizer.state_dict(), torch.load(last_ckpt_path / "optimizer.pt"))
+    torch.save(optimizer.state_dict(), last_ckpt_path / "optimizer.pt")
     torch.save({"last_epoch": cfg.num_epochs}, last_ckpt_path / "scheduler.pt")
 
 
