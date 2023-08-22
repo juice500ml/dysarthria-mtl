@@ -1,5 +1,7 @@
 # Automatic Severity Assessment of Dysarthric speech by using Self-supervised Model with Multi-task Learning
-Official implementation of the paper: https://arxiv.org/abs/2210.15387
+- Official implementation of the paper: https://arxiv.org/abs/2210.15387
+- Accepted to ICASSP 2023
+- ICASSP Slides: [slides.pdf](./slides.pdf)
 
 ## How to run
 ```
